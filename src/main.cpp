@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "SdFat.h"
 #include "YM2610.h"
+#include "SPIRAM.h"
 
 int YM_Datapins[8] = {23, 22, 21, 20, 19, 18, 17, 16};
 int YM_RADpins[8] = {24, 25, 26, 27, 28, 29, 30, 31};
@@ -14,7 +15,8 @@ const int YM_A0 = 1;
 const int YM_IC = 2; 
 const int YM_IRQ = 6;
 
-
+SPIRAM adpcmRAM(43);
+SPIRAM deltaTRAM(48);
 YM2610 ym2610(YM_Datapins, YM_RADpins, YM_PADpins, YM_CS, YM_RD, YM_WR, YM_A1, YM_A0, YM_IRQ, YM_IC);
 
 SdFatSdio SD;
@@ -61,6 +63,7 @@ String gameDate;
 void FillBuffer()
 {
     vgm.readBytes(cmdBuffer, MAX_CMD_BUFFER);
+    //Serial.print("File location: "); Serial.println(vgm.position(), HEX);
 }
 
 unsigned char GetByte()
@@ -215,8 +218,10 @@ void GetHeaderData() //Scrape off the important VGM data from the header, then d
   }
   else
   {
-    for(int i = 0; i < vgmDataOffset; i++) GetByte();  //VGM starts at different data position (Probably VGM spec 1.7+)
+    for(int i = 0; i < vgmDataOffset-4; i++) GetByte();  //VGM starts at different data position (Probably VGM spec 1.7+)
   }
+  //Offset manually set to -4 due to overshooting the data offset. This does not seem normal and will need to be fixed.
+  //Serial.println("Starting postion: "); Serial.println(vgm.position(), HEX);
 }
 
 enum StartUpProfile {FIRST_START, NEXT, PREVIOUS, RNG, REQUEST};
@@ -364,7 +369,17 @@ void StartupSequence(StartUpProfile sup, String request = "")
       }
     }
 
-    delay(500);
+    delay(5000);
+    //RAM Test
+    // for(int i = 0; i<10; i++)
+    // {
+    //   deltaTRAM.WriteByte(i,i);
+    // }
+    // for(int i = 0; i<10; i++)
+    // {
+    //   Serial.print(i, HEX); Serial.print(" : "); Serial.println(deltaTRAM.ReadByte(i));
+    // }
+
 }
 
 void setup()
@@ -387,6 +402,8 @@ void setup()
     StartupSequence(FIRST_START);
 }
 
+
+bool tmp = false;
 void loop()
 {
   while(Serial.available() || Serial2.available())
@@ -440,9 +457,58 @@ void loop()
     //delay(150);
     return;
   }
+  //delay(1000);
   cmd = GetByte();
+  if(tmp == false)
+  {
+    tmp = true;
+    Serial.print("First command:"); Serial.println(cmd, HEX);
+  }
   switch(cmd)
   {
+
+    case 0x58:
+    {
+      uint8_t addr = GetByte();
+      uint8_t data = GetByte();
+      ym2610.SendDataPins(addr, data, 0);
+      break;
+    }
+    case 0x59:
+    {
+      uint8_t addr = GetByte();
+      uint8_t data = GetByte();
+      ym2610.SendDataPins(addr, data, 1);
+      break;
+    }
+    case 0x67:
+    {
+      Serial.println("DATA BLOCK");
+      GetByte();
+      uint8_t dataBlockType = GetByte();
+      if(dataBlockType == 0x82)
+      {
+        uint32_t adpcmSize = ReadBuffer32();
+        //uint32_t adpcmAddr = ReadBuffer32();
+        Serial.print("ADPCM SIZE: "); Serial.println(adpcmSize);
+        //Serial.print("ADPCM ADDR: "); Serial.println(adpcmAddr);
+        for(uint32_t i = 0; i<adpcmSize; i++)
+          adpcmRAM.WriteByte(i, GetByte());
+        //Serial.print("POST PCM POS: "); Serial.println(vgm.position()-1);
+      }
+      else if(dataBlockType == 0x83)
+      {
+        uint32_t deltatSize = ReadBuffer32();
+        //uint32_t deltaTAddr = ReadBuffer32();
+        Serial.print("DELTAT SIZE: "); Serial.println(deltatSize);
+        //Serial.print("DELTAT ADDR: "); Serial.println(deltaTAddr);
+        for(uint32_t i = 0; i<deltatSize; i++)
+          deltaTRAM.WriteByte(i, GetByte());
+          //Serial.print("POST PCM POS: "); Serial.println(vgm.position()-1);
+      }
+      break;
+    }
+
     case 0x61:
     {
       //Serial.print("0x61 WAIT: at location: ");
@@ -510,6 +576,7 @@ void loop()
       
       default:
       Serial.print("Defauled command: "); Serial.println(cmd, HEX);
+      Serial.print("At: "); Serial.println(vgm.position()-1, HEX);
       break;
 
   }
